@@ -17,7 +17,7 @@ def run_tui():
     engine = MergenNeuromorphicEngine()
     
     clear_screen()
-    console.print("[bold cyan]MERGEN RAG + LIF NÖRON + MINILM MİMARİSİ[/bold cyan]\n")
+    console.print("[bold cyan]MERGEN RAG + LIF NÖRON + SAF NÖROMORFİK MİMARİ[/bold cyan]\n")
     user_name = console.input("[dim]Ağa Bağlanan Biyolojik Gözlemci: [/dim]").strip() or "Kullanıcı"
 
     clear_screen()

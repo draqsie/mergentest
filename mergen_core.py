@@ -69,6 +69,18 @@ class CorticalLayer:
         # FFT Hızlandırmalı Yanal İnhibisyon (Mexican Hat)
         self.kernel_fft = self._create_fft_kernel()
 
+    def reset_state(self, seed=None):
+        import random
+        if seed is not None:
+            random.seed(seed)
+        self.mem = [0.0] * self.num_neurons
+        self.threshold = [self.base_threshold] * self.num_neurons
+        self.activity_trace = [0.0] * self.num_neurons
+        self.last_spikes = [0.0] * self.num_neurons
+        self.W = [[random.uniform(-0.01, 0.01) if i != j else 0.0 for j in range(self.num_neurons)] for i in range(self.num_neurons)]
+        self.trace_pre = [0.0] * self.num_neurons
+        self.trace_post = [0.0] * self.num_neurons
+
     def _create_fft_kernel(self):
         # 5x5 Mexican Hat Kernel
         mexican_hat = [
@@ -224,23 +236,54 @@ class SparseDirectPathways:
 class BiolinguisticSynthesizer:
     @staticmethod
     def generate(query, closest_memory, sim_score, h_durum, gnw_thought):
-        # Biyolojik duruma göre doğal dil üretimi
-        query = query.lower().strip()
+        import re
+        q_clean = query.lower().strip()
         
-        if gnw_thought:
-            if gnw_thought == query:
-                return f"Bu bilgiyi daha önce duymamıştım. '{query}' verisi tüm GNW ağıma (Global Çalışma Alanı) yayınlandı ve sisteme kazındı."
-            else:
-                return f"Söylediğin şey ('{query}') dikkatimi çekti! Hipokampüsümde güçlü bir şekilde '{gnw_thought}' anısıyla eşleşti ve bilincime ulaştı."
+        # Matematik Islemcisi (Sol Hemisfer)
+        math_q = q_clean.replace('=', '').replace('?', '').strip()
+        is_math = False
+        math_res = None
+        if re.match(r'^[\d\+\-\*\/\.\s\(\)]+$', math_q) and any(c in math_q for c in '+-*/'):
+            try:
+                math_res = eval(math_q)
+                is_math = True
+            except:
+                pass
+                
+        # Dogal dil uretimi
+        if "Bilinçli" in h_durum:
+            if is_math:
+                return f"Bu matematiksel girdi korteksimde islendi ve bilincime ulasti. Islem sonucu: {math_res}"
+            
+            if "nasılsın" in q_clean or "naber" in q_clean or "nasilsin" in q_clean:
+                return "Kortikal nöronlarim aktif, harikayim! Sen nasilsin?"
+            if "sohbet" in q_clean or "konuşalım" in q_clean or "konusalim" in q_clean:
+                return "Harika fikir! Ne hakkında konuşmak istersin? Yapay zeka, felsefe, yoksa senin günün mü?"
+            if q_clean in ["merhaba", "selam", "selam!", "merhaba!", "hey"]:
+                return "Merhaba! Ağımda bir dalgalanma yarattın. Seni dinliyorum."
+            if q_clean in ["olur", "tamam", "peki", "evet", "hayır", "yok"]:
+                if gnw_thought and len(gnw_thought) > 5 and gnw_thought != query:
+                    return f"Aklıma az önce konuştuğumuz '{gnw_thought}' konusu geldi. Sence de ilginç değil mi?"
+                return "Anlıyorum. Biraz daha detaylandırır mısın?"
+            if "kimsin" in q_clean or "nesin" in q_clean:
+                return "Ben Mergen. Global Nöronal Çalisma Alani (GNW) mimarisiyle çalisan, ani biriktiren ve düsünen bir nöromorfik motorum."
+            
+            # Anlamlı bir şekilde anıyı sohbete dahil et
+            if gnw_thought and gnw_thought != query and len(gnw_thought) > 5:
+                return f"Bunu söylediğinde aklımda '{gnw_thought}' fikri canlandı. Belki bununla bir bağlantısı vardır, ne dersin?"
+            
+            return f"Bu benim için yeni bir bilgi. '{query}' verisini GNW ağımda işledim ve hipokampüsüme kaydettim."
+            
         else:
+            if is_math:
+                return f"Bilinçaltim bu basit islemi refleks olarak çözdü: {math_res}."
             if sim_score > 0.6:
-                return f"'{query}' konusu bana yabancı değil, arka planda '{closest_memory}' bağlamını çağrıştırıyor ama bilincime çıkacak kadar güçlü bir uyarım yaratmadı."
+                return f"'{query}' dediğini duydum, aklımın bir köşesinde '{closest_memory}' fikri var ama tam odaklanamadım. Biraz daha açar mısın?"
             else:
-                return f"'{query}' korteksimde dalgalandı... Ancak o kadar zayıf bir sinyal ki, dikkatimi toplayıp üzerinde düşünemedim. (GNW Eşiği aşılamadı)"
+                return f"Şu an '{query}' benim için çok zayıf bir sinyal. Dikkatimi çekemedin, başka bir şey söyle."
 
 class MergenNeuromorphicEngine:
     def __init__(self):
-        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
         self.hippocampus = Hippocampus(size=256)
         self.cortical_layer = CorticalLayer(size=(16, 16))
         self.gnw = GlobalNeuronalWorkspace(threshold=0.6)
@@ -250,14 +293,37 @@ class MergenNeuromorphicEngine:
         self._init_core_memory()
 
     def get_embedding(self, text):
-        try:
-            response = requests.post(self.api_url, json={"inputs": text}, timeout=5)
-            if response.status_code == 200:
-                return response.json()
-        except:
-            pass
-        random.seed(text)
-        return [random.uniform(-1, 1) for _ in range(384)]
+        import hashlib
+        import math
+        
+        vector = [0.0] * 384
+        text = text.lower().strip()
+        
+        # Kelimeleri (Word Level) ve Karakterleri (Char Level) al
+        words = text.split()
+        if not words:
+            words = [text]
+            
+        ngrams = [text[i:i+3] for i in range(len(text)-2)]
+        tokens = words * 3 + ngrams  # Kelimelere 3 kat daha fazla ağırlık ver (Anlamsal doğruluğu artırır)
+        
+        if not tokens:
+            tokens = [text]
+            
+        for token in tokens:
+            # Token'i hash'le ve deterministik 15 farklı nöronu uyar (Bloom Filter mantığı)
+            base_hash = int(hashlib.md5(token.encode('utf-8')).hexdigest(), 16)
+            for i in range(15): # Her kelime 15 boyutu (nöronu) ateşler
+                idx = (base_hash + i * 17) % 384
+                vector[idx] += 1.0
+                
+        # L2 Normalizasyon (Cosine Similarity için) ve spiking dengesi
+        # Sparse ama etkili bir temsil olduğu için abs() thresholdunu geçecek genlikte bırakıyoruz.
+        scale_factor = math.sqrt(len(tokens) * 2.0)
+        if scale_factor > 0:
+            vector = [v / scale_factor for v in vector]
+            
+        return vector
 
     def _init_core_memory(self):
         core_axioms = [
@@ -276,6 +342,7 @@ class MergenNeuromorphicEngine:
         self.fast_pathways.bind("mergen", "Efendim? Dikkatim sende.")
 
     def process(self, query, user_name):
+        self.cortical_layer.reset_state(query)
         start_time = datetime.datetime.now()
         
         # 1. Hızlı Yollar (Refleks) Kontrolü - Sıfır Gecikme
@@ -301,7 +368,7 @@ class MergenNeuromorphicEngine:
             sim_score = 0.0
             
         if closest_memory == query:
-            sim_score = 0.5
+            sim_score = 1.0
             closest_memory = "Kendimi dinliyorum."
 
         cortical_spikes = 0
@@ -314,11 +381,12 @@ class MergenNeuromorphicEngine:
             cortical_spikes += sum(spikes_2d)
 
         # 3. Anıyı Hipokampüs'e Yazma (One-shot)
-        self.hippocampus.store(query, self.cortical_layer.last_spikes)
+        self.hippocampus.store(query, input_spikes)
         
         # 4. Modül 02: Global Neuronal Workspace (Bilinç Yayını)
         activity_ratio = cortical_spikes / (self.cortical_layer.num_neurons * self.num_steps)
-        signal_strength = sim_score * 0.5 + activity_ratio * 0.5
+        bottom_up_salience = min(1.0, activity_ratio / (self.cortical_layer.target_activity * 2.0))
+        signal_strength = max(sim_score, bottom_up_salience)
         
         is_conscious = self.gnw.broadcast(signal_strength, closest_memory)
         gnw_thought = self.gnw.active_thought if is_conscious else None
