@@ -40,12 +40,24 @@ def run_tui():
             # Teknik Metrikler
             duygu = result["duygu"]
             esik = result["esik"]
+            snapshot = engine.snapshot()
             renk = "blue"
             if "Bilinçli" in duygu: renk = "cyan"
             elif "Refleks" in duygu: renk = "yellow"
             elif "Bilinçaltı" in duygu: renk = "white"
+            elif "Rüya" in duygu: renk = "magenta"
+            elif "Uyku" in duygu: renk = "magenta"
 
-            meta = f"[dim]Ağ Durumu: [{renk}]{duygu}[/{renk}] | Eşik: {esik:.2f} | Kortikal Ateş: {result['cortical_spikes']} | Anlam/Çelişki: {result['anlam_spikes']}/{result['celiski_spikes']} | dt: {result['latency']:.2f}s[/dim]"
+            neu = snapshot["neuromodulators"]
+            meta = (
+                f"[dim]Ağ Durumu: [{renk}]{duygu}[/{renk}] | "
+                f"Eşik: {esik:.2f} | Zaman: {snapshot['time']:.3f}s | Kortikal Ateş: {result['cortical_spikes']} | "
+                f"Anlam/Çelişki: {result['anlam_spikes']}/{result['celiski_spikes']} | "
+                f"Farkındalık: {snapshot['awareness_level']:.2f} | Uyku: {snapshot['sleep_stage']} ({snapshot['sleep_pressure']:.2f}) | "
+                f"Eylem: {snapshot['motor_action']} | Ödül: {snapshot['reward_trace']:.2f} | "
+                f"DA/ACh/5-HT/NE: {neu['dopamine']:.2f}/{neu['acetylcholine']:.2f}/{neu['serotonin']:.2f}/{neu['norepinephrine']:.2f} | "
+                f"dt: {result['latency']:.2f}s[/dim]"
+            )
             console.print(meta)
 
         except KeyboardInterrupt:
