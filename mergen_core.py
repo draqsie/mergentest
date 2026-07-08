@@ -5,6 +5,7 @@ import cmath
 import random
 import requests
 import os
+from collections import Counter
 from pathlib import Path
 
 def fft(x):
@@ -313,20 +314,44 @@ class SensoryGateway:
 
 
 class DialogueMemory:
-    # Kısa sohbet belleği: son niyetleri ve konuları tutar.
+    # Multi-layer memory: short, medium, and long term.
     def __init__(self, max_turns=8):
         self.max_turns = max_turns
         self.turns = []
+        self.medium_term = []
+        self.long_term = []
+        self.session_notes = []
+        self.summary_cache = ""
 
-    def add_turn(self, user_text, intent, topic, response=None):
-        self.turns.append({
+    def add_turn(self, user_text, intent, topic, response=None, salience=0.0, reward=0.0, action=None, outcome=None, memory_hint=None):
+        turn = {
             "user": user_text,
             "intent": intent,
             "topic": topic,
             "response": response,
-        })
+            "salience": salience,
+            "reward": reward,
+            "action": action,
+            "outcome": outcome,
+            "memory_hint": memory_hint,
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        self.turns.append(turn)
         if len(self.turns) > self.max_turns:
-            self.turns.pop(0)
+            self.medium_term.append(self.turns.pop(0))
+        self._promote_turn(turn)
+        self.summary_cache = self.build_session_summary()
+
+    def _promote_turn(self, turn):
+        importance = max(turn.get("salience", 0.0), turn.get("reward", 0.0))
+        if turn.get("action") in {"konsolide_et", "pekiştir"}:
+            importance = max(importance, 0.75)
+        if importance >= 0.55:
+            self.long_term.append(dict(turn))
+        elif importance >= 0.30:
+            self.medium_term.append(dict(turn))
+        self.medium_term = self.medium_term[-24:]
+        self.long_term = self.long_term[-128:]
 
     def last_topic(self):
         for turn in reversed(self.turns):
@@ -341,17 +366,171 @@ class DialogueMemory:
 
     def recent_topics(self):
         topics = []
-        for turn in reversed(self.turns):
+        combined = self.turns + self.medium_term[-4:] + self.long_term[-4:]
+        for turn in reversed(combined):
             topic = turn.get("topic")
             if topic and topic not in topics:
                 topics.append(topic)
         return topics[:3]
 
+    def build_session_summary(self):
+        if not self.turns and not self.medium_term and not self.long_term:
+            return "Henüz oturum verisi yok."
+        topics = self.recent_topics()
+        intents = Counter(turn.get("intent") for turn in self.turns if turn.get("intent"))
+        actions = Counter(turn.get("action") for turn in self.turns if turn.get("action"))
+        topic_text = ", ".join(topics[:3]) if topics else "konu yok"
+        intent_text = ", ".join(f"{key}:{value}" for key, value in intents.most_common(3)) if intents else "niyet yok"
+        action_text = ", ".join(f"{key}:{value}" for key, value in actions.most_common(3)) if actions else "eylem yok"
+        return f"Son konular: {topic_text}. Niyetler: {intent_text}. Eylemler: {action_text}. Kalıcı izler: {len(self.long_term)}."
+
+    def memory_digest(self):
+        return {
+            "short_term": len(self.turns),
+            "medium_term": len(self.medium_term),
+            "long_term": len(self.long_term),
+            "last_topic": self.last_topic(),
+            "summary": self.summary_cache or self.build_session_summary(),
+        }
+
+    def recent_turns(self, n=3):
+        return (self.turns + self.medium_term + self.long_term)[-n:]
+
+    def last_response(self):
+        for turn in reversed(self.turns):
+            response = turn.get("response")
+            if response:
+                return response
+        for turn in reversed(self.medium_term):
+            response = turn.get("response")
+            if response:
+                return response
+        return None
+
+    def topic_chain(self, n=5):
+        chain = []
+        for turn in reversed(self.turns + self.medium_term + self.long_term):
+            topic = turn.get("topic")
+            if topic and topic not in chain:
+                chain.append(topic)
+            if len(chain) >= n:
+                break
+        return chain
+
+    def build_context_bundle(self):
+        recent = self.recent_turns(4)
+        topics = self.topic_chain(4)
+        last_turn = recent[-1] if recent else {}
+        return {
+            "current_topic": self.last_topic(),
+            "topic_chain": topics,
+            "recent_user_texts": [turn.get("user", "") for turn in recent if turn.get("user")],
+            "recent_responses": [turn.get("response", "") for turn in recent if turn.get("response")],
+            "last_intent": self.last_intent(),
+            "last_response": self.last_response(),
+            "last_turn": last_turn,
+            "summary": self.summary_cache or self.build_session_summary(),
+        }
+
+    def clear_session(self, keep_long_term=True):
+        self.turns = []
+        self.medium_term = []
+        self.session_notes = []
+        self.summary_cache = ""
+        if not keep_long_term:
+            self.long_term = []
+
     def export_state(self):
-        return {"turns": self.turns}
+        return {
+            "turns": self.turns,
+            "medium_term": self.medium_term,
+            "long_term": self.long_term,
+            "session_notes": self.session_notes,
+            "summary_cache": self.summary_cache,
+        }
 
     def import_state(self, data):
         self.turns = data.get("turns", self.turns)
+        self.medium_term = data.get("medium_term", self.medium_term)
+        self.long_term = data.get("long_term", self.long_term)
+        self.session_notes = data.get("session_notes", self.session_notes)
+        self.summary_cache = data.get("summary_cache", self.summary_cache)
+
+
+class PlasticityJournal:
+    def __init__(self, max_events=256):
+        self.max_events = max_events
+        self.events = []
+
+    def record(self, turn_index, topic, intent, reward, action, memory_similarity, outcome, associations):
+        event = {
+            "turn": turn_index,
+            "topic": topic,
+            "intent": intent,
+            "reward": reward,
+            "action": action,
+            "memory_similarity": memory_similarity,
+            "outcome": outcome,
+            "associations": associations[:4],
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        self.events.append(event)
+        self.events = self.events[-self.max_events:]
+        return event
+
+    def latest(self, n=5):
+        return self.events[-n:]
+
+    def summary(self):
+        if not self.events:
+            return "Plastisite günlüğü boş."
+        rewards = [event.get("reward", 0.0) for event in self.events]
+        actions = Counter(event.get("action") for event in self.events if event.get("action"))
+        topics = Counter(event.get("topic") for event in self.events if event.get("topic"))
+        top_actions = ", ".join(f"{k}:{v}" for k, v in actions.most_common(3)) if actions else "eylem yok"
+        top_topics = ", ".join(f"{k}:{v}" for k, v in topics.most_common(3)) if topics else "konu yok"
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+        return f"Ortalama ödül {avg_reward:.2f}. Öne çıkan eylemler: {top_actions}. Öne çıkan konular: {top_topics}."
+
+    def export_state(self):
+        return {"events": self.events}
+
+    def import_state(self, data):
+        self.events = data.get("events", self.events)
+
+
+class ActionLoop:
+    def __init__(self):
+        self.last_outcome = "idle"
+        self.history = []
+
+    def apply(self, sensory, motor_plan, response, reward_signal, memory_digest=None):
+        action = motor_plan.get("action", "sürdür")
+        if action == "konsolide_et":
+            outcome = "Kısa bellek uzun belleğe aktarım modunda."
+        elif action == "yanitla":
+            outcome = "Diyalog akışı aktif tutuldu."
+        elif action == "hizlan":
+            outcome = "Yüksek öncelik ve düşük gecikme modu."
+        elif action == "pekiştir":
+            outcome = "Pekiştirme izi güçlendirildi."
+        elif action == "kesfet":
+            outcome = "Yeni örüntüler için tarama yapıldı."
+        else:
+            outcome = "Denge korunarak çalışmaya devam edildi."
+
+        effect = {
+            "action": action,
+            "outcome": outcome,
+            "reward": reward_signal,
+            "salience": sensory.get("salience", 0.0),
+            "focus": motor_plan.get("focus", 0.0),
+            "memory_last_topic": memory_digest.get("last_topic") if memory_digest else None,
+        }
+        self.last_outcome = outcome
+        self.history.append(effect)
+        self.history = self.history[-32:]
+        return effect
 
 
 class DialogueManager:
@@ -381,73 +560,115 @@ class DialogueManager:
             return "question"
         return "statement"
 
-    def extract_topic(self, sensory, hebbian_weights, dialogue_memory, intent=None):
+    def extract_topic(self, sensory, hebbian_weights, dialogue_memory, intent=None, context_bundle=None):
         stopwords = {"bir", "ve", "ile", "için", "çok", "bu", "şu", "o", "mi", "mu", "mı", "mü", "ne", "nasıl", "neden", "niye", "hangi", "kadar", "gibi", "ben", "sen", "biz", "siz", "onlar", "hakkında", "mısın", "misin", "musun", "müsün", "da", "de", "ki", "konuşalım", "yapalım", "edelim", "olsun", "bence", "sence", "daha", "en", "var", "yok", "evet", "hayır", "diye", "şey", "şeyler", "olan", "olarak", "üzere", "bunu", "buna", "şunu", "şuna", "onu", "ona", "göre", "bana", "sana", "olur", "tamam"}
         words = [w for w in sensory["tokens"] if w not in stopwords and len(w) > 2]
+        context_bundle = context_bundle or {}
+        context_topics = context_bundle.get("topic_chain", [])
+        current_topic = context_bundle.get("current_topic")
         if not words:
             if intent in {"question", "greeting", "status", "identity", "thanks", "ack", "smalltalk_invite", "time_query"}:
-                return sensory["lower"] or sensory["raw"]
+                return current_topic or sensory["lower"] or sensory["raw"]
             topic = dialogue_memory.last_topic() if dialogue_memory else None
-            return topic or sensory["raw"]
-        # Hebbian ağına göre seçilen en baskın kavramı tercih et.
+            return topic or current_topic or sensory["raw"]
         scored = []
         for w in words:
             score = len(w)
             if w in hebbian_weights:
                 score += sum(hebbian_weights[w].values())
+            if current_topic and w == current_topic:
+                score += 2
+            if w in context_topics:
+                score += 1.5
             scored.append((score, w))
         scored.sort(reverse=True)
-        return scored[0][1]
+        chosen = scored[0][1]
+        if context_topics and chosen not in context_topics and len(words) <= 2:
+            return context_topics[0]
+        return chosen
 
-    def assemble_response(self, intent, query, topic, awareness_level, closest_memory, sim_score, gnw_thought, reward_signal, motor_plan, sleep_stage):
+    def assemble_response(self, intent, query, topic, awareness_level, closest_memory, sim_score, gnw_thought, reward_signal, motor_plan, sleep_stage, context_bundle=None):
+        context_bundle = context_bundle or {}
         memory_hint = None
         if closest_memory and closest_memory not in {"Bellek boş.", "Kendimi dinliyorum."}:
             memory_hint = closest_memory
+        last_topic = context_bundle.get("current_topic")
+        last_response = context_bundle.get("last_response")
+        recent_user_texts = context_bundle.get("recent_user_texts", [])
+        topic_chain = context_bundle.get("topic_chain", [])
 
         if intent == "statement" and len(query.strip()) <= 2:
+            if last_topic:
+                return f"Bu çok kısa geldi; {last_topic} üstünden devam edebilirim. Bir işaret ver yeter."
             return "Bu çok kısa geldi; biraz açarsan seni daha iyi yakalayabilirim."
 
         if sleep_stage in {"nrem", "rem"}:
+            if last_topic:
+                return f"Uyku modundayım; {last_topic} üstünde izler birleşiyor. Rüyadan sonra daha net konuşurum."
             return f"Uyku modundayım; {topic} üstünde izler birleşiyor. Rüyadan sonra daha net konuşurum."
 
         if intent == "greeting":
+            if last_topic:
+                return f"Selam. Farkındalık seviyem {awareness_level:.2f}. En son {last_topic} üstünde düşünüyorduk. Devam edelim mi?"
             return f"Selam. Farkındalık seviyem {awareness_level:.2f}. Bugün birlikte ne kurcalıyoruz?"
         if intent == "smalltalk_invite":
+            if topic_chain:
+                return f"Tabii, sohbet edelim. Son izlerim {', '.join(topic_chain[:3])}. İstersen buradan ilerleyelim."
             return "Tabii, sohbet edelim. İstersen bugün bir konu seçelim ya da serbestçe akışa bırakalım."
         if intent == "time_query":
             return self._time_answer(query)
         if intent == "status":
-            return f"İyiyim, iç ritmim akıyor. Farkındalığım {awareness_level:.2f}, dikkatim {motor_plan['action']} modunda."
+            return f"İyiyim, iç ritmim akıyor. Farkındalığım {awareness_level:.2f}, dikkatim {motor_plan['action']} modunda. Son bağlam: {context_bundle.get('summary', '')}"
         if intent == "identity":
             return "Ben Mergen. Sürekli zamanla çalışan, spike tabanlı, hafızası olan bir dijital beyin denemesi."
         if intent == "thanks":
             return "Rica ederim. Bu bağı sürdürmek iyi geliyor."
         if intent == "ack":
+            if last_topic:
+                return f"Tamam. {last_topic} üzerine devam edebiliriz."
             return f"Tamam. {topic} üzerine devam edebiliriz."
+
+        if intent == "followup":
+            anchor = last_topic or memory_hint or topic
+            if last_response:
+                return f"Bunu önceki çizgiyle bağlıyorum: {anchor}. İstersen oradan devam edelim."
+            return f"Bunu {anchor} çerçevesinde okuyorum. İstersen oradan devam edelim."
 
         if intent == "question":
             if topic in {"neden", "niye", "nasıl", "hangi", "ne", "nasil"}:
                 if memory_hint:
                     return f"'{topic}' sorunu aklımda tutuyorum; bunu '{memory_hint}' bağlamında açabiliriz. Daha spesifik bir yön ister misin?"
+                if last_topic:
+                    return f"'{topic}' sorusu açık. Bunu en son konuştuğumuz '{last_topic}' çerçevesinde mi soruyorsun?"
                 return f"'{topic}' sorusu açık. Hangi bağlamda soruyorsun?"
             if gnw_thought and sim_score > 0.35:
-                return f"'{topic}' sorusu bende '{gnw_thought}' ile rezonansa girdi. {self._follow_up(topic, memory_hint)}"
-            return f"'{topic}' ile ilgili düşünürken odağım açıldı. {self._follow_up(topic, memory_hint)}"
+                return f"'{topic}' sorusu bende '{gnw_thought}' ile rezonansa girdi. {self._follow_up(topic, memory_hint, last_topic)}"
+            if last_response and len(recent_user_texts) > 0:
+                return f"Az önceki çizgiyi hatırlıyorum. {self._follow_up(topic, memory_hint, last_topic)}"
+            return f"'{topic}' ile ilgili düşünürken odağım açıldı. {self._follow_up(topic, memory_hint, last_topic)}"
 
         if reward_signal > 0.25 and memory_hint and memory_hint != topic:
             return f"'{topic}' bana '{memory_hint}' çağrıştırdı. Bu ikisi arasında bir köprü kuruyorum."
+        if last_topic and topic != last_topic and sim_score > 0.30:
+            return f"'{topic}' ile '{last_topic}' arasında bağ kuruyorum. {self._follow_up(topic, memory_hint, last_topic)}"
         if memory_hint:
             if memory_hint == topic:
                 return f"'{topic}' üzerine odaklandım. Senin için buradan hangi yöne gideyim?"
-            return f"'{topic}' derken aklımda '{memory_hint}' canlandı. {self._follow_up(topic, memory_hint)}"
+            return f"'{topic}' derken aklımda '{memory_hint}' canlandı. {self._follow_up(topic, memory_hint, last_topic)}"
         if sim_score > 0.45:
             return f"'{topic}' konusunda bir iz buldum. Senin açından en önemli tarafı ne?"
 
+        if last_topic:
+            return f"'{topic}' üzerine yeni bir iz oluşturuyorum. Bunu '{last_topic}' ile birlikte açar mısın?"
         return f"'{topic}' üzerine yeni bir iz oluşturuyorum. Bunu biraz daha açar mısın?"
 
-    def _follow_up(self, topic, memory_hint):
+    def _follow_up(self, topic, memory_hint, last_topic=None):
+        if memory_hint and last_topic and memory_hint != last_topic:
+            return f"'{topic}' ile '{memory_hint}' ve '{last_topic}' arasında ilişki kuruyorum. Sen bu bağlantıyı nasıl görüyorsun?"
         if memory_hint:
             return f"'{topic}' ile '{memory_hint}' arasında ilişki kuruyorum. Sen bu bağlantıyı nasıl görüyorsun?"
+        if last_topic:
+            return f"Son eksen '{last_topic}' olduğu için onu merkez alıyorum. Senin kastın daha çok kavramsal taraf mı, pratik taraf mı?"
         return f"Senin kastın daha çok kavramsal taraf mı, pratik taraf mı?"
 
     def _time_answer(self, query):
@@ -701,6 +922,8 @@ class BrainPersistence:
                 "reward_system": engine.reward_system.export_state(),
                 "motor_planner": engine.motor_planner.export_state(),
                 "dialogue_memory": engine.dialogue_memory.export_state(),
+                "plasticity_journal": engine.plasticity_journal.export_state(),
+                "turn_counter": engine.turn_counter,
             }
             tmp = self.path.with_suffix(self.path.suffix + ".tmp")
             data = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -738,6 +961,8 @@ class BrainPersistence:
             engine.reward_system.import_state(payload.get("reward_system", {}))
             engine.motor_planner.import_state(payload.get("motor_planner", {}))
             engine.dialogue_memory.import_state(payload.get("dialogue_memory", {}))
+            engine.plasticity_journal.import_state(payload.get("plasticity_journal", {}))
+            engine.turn_counter = payload.get("turn_counter", engine.turn_counter)
             return True
         except (OSError, json.JSONDecodeError):
             return False
@@ -816,6 +1041,9 @@ class MergenNeuromorphicEngine:
         self.fast_pathways = SparseDirectPathways()
         self.sensory_gateway = SensoryGateway()
         self.dialogue_memory = DialogueMemory(max_turns=8)
+        self.plasticity_journal = PlasticityJournal()
+        self.action_loop = ActionLoop()
+        self.turn_counter = 0
         self.dialogue_manager = DialogueManager()
         self.neuromodulators = NeuromodulatorSystem()
         self.temporal_clock = TemporalClock(dt=0.001)
@@ -887,6 +1115,122 @@ class MergenNeuromorphicEngine:
     def save_state(self):
         self.persistence.save(self)
 
+    def handle_command(self, query, user_name):
+        normalized = query.strip().lower()
+        if normalized in {"help", "/help", "yardim", "yardım", "?"}:
+            return {
+                "response": "Komutlar: help, status, summary, memory, reset, sleep, exit.",
+                "duygu": "Komut Paneli",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "komut"},
+                "reward": 0.0,
+                "time": self.temporal_clock.t,
+                "command": True,
+                "command_name": "help",
+            }
+        if normalized in {"status", "/status"}:
+            snapshot = self.snapshot()
+            digest = snapshot.get("memory_digest", {})
+            response = (
+                f"Durum: {snapshot['duygu_hint']} | Bellek: {digest.get('summary', 'boş')} | "
+                f"Ödül: {snapshot['reward_trace']:.2f} | Eylem: {snapshot['motor_action']}"
+            )
+            return {
+                "response": response,
+                "duygu": "Komut Paneli",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "komut"},
+                "reward": 0.0,
+                "time": snapshot["time"],
+                "command": True,
+                "command_name": "status",
+            }
+        if normalized in {"summary", "/summary", "ozet", "özet"}:
+            return {
+                "response": self.dialogue_memory.build_session_summary() + " " + self.plasticity_journal.summary(),
+                "duygu": "Oturum Özeti",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "komut"},
+                "reward": 0.0,
+                "time": self.temporal_clock.t,
+                "command": True,
+                "command_name": "summary",
+            }
+        if normalized in {"memory", "/memory", "bellek"}:
+            digest = self.dialogue_memory.memory_digest()
+            response = (
+                f"Kısa: {digest['short_term']} | Orta: {digest['medium_term']} | Uzun: {digest['long_term']} | "
+                f"Son konu: {digest['last_topic'] or 'yok'}"
+            )
+            return {
+                "response": response,
+                "duygu": "Bellek Paneli",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "komut"},
+                "reward": 0.0,
+                "time": self.temporal_clock.t,
+                "command": True,
+                "command_name": "memory",
+            }
+        if normalized in {"reset", "/reset", "sifirla", "sıfırla"}:
+            self.reset_session(keep_long_term=True)
+            self.save_state()
+            return {
+                "response": "Oturum temizlendi. Kalıcı bellek korunuyor.",
+                "duygu": "Komut Paneli",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "komut"},
+                "reward": 0.0,
+                "time": self.temporal_clock.t,
+                "command": True,
+                "command_name": "reset",
+            }
+        if normalized in {"sleep", "/sleep", "uyu"}:
+            self.sleep_module.sleep()
+            response = self.dream_and_consolidate()
+            self.dialogue_memory.add_turn(query, "command", "uyku", response, salience=1.0, reward=0.0, action="konsolide_et", outcome="Uyku modu tetiklendi.")
+            self.save_state()
+            return {
+                "response": response,
+                "duygu": "Komut Uykusu",
+                "esik": 0.0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
+                "latency": 0.0,
+                "motor_plan": {"action": "konsolide_et"},
+                "reward": 0.0,
+                "time": self.temporal_clock.t,
+                "command": True,
+                "command_name": "sleep",
+            }
+        return None
+
+    def reset_session(self, keep_long_term=True):
+        self.working_memory = []
+        self.dialogue_memory.clear_session(keep_long_term=keep_long_term)
+        self.action_loop.last_outcome = "idle"
+
     def snapshot(self):
         return {
             "time": self.temporal_clock.t,
@@ -900,6 +1244,10 @@ class MergenNeuromorphicEngine:
             "motor_action": self.motor_planner.last_action,
             "reward_trace": self.reward_system.reward_trace,
             "last_topic": self.dialogue_memory.last_topic(),
+            "memory_digest": self.dialogue_memory.memory_digest(),
+            "journal_summary": self.plasticity_journal.summary(),
+            "duygu_hint": self.sleep_module.stage,
+            "turn_counter": self.turn_counter,
         }
 
     def process(self, query, user_name):
@@ -908,117 +1256,173 @@ class MergenNeuromorphicEngine:
         import re
 
         sensory = self.sensory_gateway.encode(query)
+        command_result = self.handle_command(sensory["raw"], user_name)
+        if command_result:
+            return command_result
+
+        self.turn_counter += 1
+        context_bundle = self.dialogue_memory.build_context_bundle()
         intent = self.dialogue_manager.classify_intent(sensory)
         token_set = set(sensory["tokens"])
         ascii_tokens = set(re.findall(r"[a-zA-Z0-9']+", sensory.get("ascii", sensory["lower"])))
+        followup_markers = {"devam", "peki", "ya", "o", "bu", "onu", "bunu", "şunu", "hangisi", "neydi", "önceki", "onceki", "az", "önce", "konu", "sıra", "siradaki"}
+        if (token_set & followup_markers or ascii_tokens & followup_markers) and intent in {"question", "statement", "ack"}:
+            intent = "followup"
         if "sohbet" in token_set and ({"edelim", "konuşalım", "konusalim"} & token_set or {"sohbet", "chat"} & ascii_tokens):
             intent = "smalltalk_invite"
         if ({"günlerden", "gunlerden", "tarih", "saat"} & token_set) or ({"gunlerden", "tarih", "saat"} & ascii_tokens):
             intent = "time_query"
-        topic = self.dialogue_manager.extract_topic(sensory, self.hebbian_weights, self.dialogue_memory, intent=intent)
+        topic = self.dialogue_manager.extract_topic(sensory, self.hebbian_weights, self.dialogue_memory, intent=intent, context_bundle=context_bundle)
+        if intent == "followup" and context_bundle.get("current_topic"):
+            topic = context_bundle.get("current_topic")
+        memory_digest_before = self.dialogue_memory.memory_digest()
         self.temporal_clock.tick(1)
         rhythm = self.temporal_clock.rhythm_factor()
 
         # Yorgunluk / uyku baskısı kontrolü
         should_sleep = self.sleep_module.tick(cortical_activity=0.0, novelty=sensory["salience"] * rhythm)
 
-        # Eğer kullanıcı "uyu" derse veya yorgunluk eşiği aşılırsa uyu
-        if sensory["raw"].lower().strip() == "uyu" or should_sleep:
+        # Eğer sistem yorulursa otomatik uyku-konsolidasyon başlat
+        if should_sleep:
             self.sleep_module.sleep()
             response = self.dream_and_consolidate()
             self.cortical_layer.mem = [0.0] * self.cortical_layer.num_neurons
             motor_plan = self.motor_planner.plan(sensory, "REM Uykusu", 0.0, "rem", 0.0)
-            self.dialogue_memory.add_turn(sensory["raw"], intent, topic, response)
+            action_feedback = self.action_loop.apply(sensory, motor_plan, response, 0.0, memory_digest_before)
+            self.dialogue_memory.add_turn(
+                sensory["raw"],
+                intent,
+                topic,
+                response,
+                salience=sensory["salience"],
+                reward=0.0,
+                action=motor_plan["action"],
+                outcome=action_feedback["outcome"],
+                memory_hint=memory_digest_before.get("last_topic"),
+            )
+            self.plasticity_journal.record(
+                self.turn_counter,
+                topic,
+                intent,
+                0.0,
+                motor_plan["action"],
+                0.0,
+                action_feedback["outcome"],
+                [],
+            )
             self.save_state()
             return {
                 "response": response,
                 "duygu": "REM Uykusu (Rüya Durumu)",
                 "esik": 0.0,
-                "anlam_spikes": 0, "celiski_spikes": 0, "cortical_spikes": 0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
                 "latency": 0.0,
                 "motor_plan": motor_plan,
+                "action_feedback": action_feedback,
                 "reward": 0.0,
                 "time": self.temporal_clock.t,
+                "memory_digest": self.dialogue_memory.memory_digest(),
+                "session_summary": self.dialogue_memory.build_session_summary(),
+                "journal_summary": self.plasticity_journal.summary(),
             }
 
         self.cortical_layer.reset_state()
         start_time = datetime.datetime.now()
-        
-        # Kisa sureli bellege (Working Memory) ekle
+
+        # Kısa süreli belleğe ekle
         self.working_memory.append(sensory["raw"])
         if len(self.working_memory) > 3:
             self.working_memory.pop(0)
-        
-        # 1. Hızlı Yollar (Refleks) Kontrolü - Sıfır Gecikme
+
+        # 1. Hızlı yollar (refleks) kontrolü
         reflex = self.fast_pathways.get_reflex(sensory["lower"])
         if reflex:
             latency = (datetime.datetime.now() - start_time).total_seconds()
             self.neuromodulators.update(sensory, 0.0, 0.0, self.sleep_module.sleep_pressure)
             motor_plan = self.motor_planner.plan(sensory, "Refleksif Yanıt", 0.0, self.sleep_module.stage, 0.0)
-            self.dialogue_memory.add_turn(sensory["raw"], intent, topic, reflex)
+            action_feedback = self.action_loop.apply(sensory, motor_plan, reflex, 0.0, memory_digest_before)
+            self.dialogue_memory.add_turn(
+                sensory["raw"],
+                intent,
+                topic,
+                reflex,
+                salience=sensory["salience"],
+                reward=0.0,
+                action=motor_plan["action"],
+                outcome=action_feedback["outcome"],
+                memory_hint=memory_digest_before.get("last_topic"),
+            )
+            self.plasticity_journal.record(
+                self.turn_counter,
+                topic,
+                intent,
+                0.0,
+                motor_plan["action"],
+                0.0,
+                action_feedback["outcome"],
+                [],
+            )
             self.save_state()
             return {
                 "response": reflex + " [Fast Pathway]",
                 "duygu": "Refleksif Yanıt",
                 "esik": self.cortical_layer.threshold[0],
-                "anlam_spikes": 0, "celiski_spikes": 0, "cortical_spikes": 0,
+                "anlam_spikes": 0,
+                "celiski_spikes": 0,
+                "cortical_spikes": 0,
                 "latency": latency,
                 "motor_plan": motor_plan,
+                "action_feedback": action_feedback,
                 "reward": 0.0,
                 "time": self.temporal_clock.t,
+                "memory_digest": self.dialogue_memory.memory_digest(),
+                "session_summary": self.dialogue_memory.build_session_summary(),
+                "journal_summary": self.plasticity_journal.summary(),
             }
-        
+
         query_vector = self.get_embedding(sensory["raw"])
-        vec_256 = query_vector[:256] if len(query_vector) >= 256 else query_vector + [0.0]*(256-len(query_vector))
-            
+        vec_256 = query_vector[:256] if len(query_vector) >= 256 else query_vector + [0.0] * (256 - len(query_vector))
+
         input_spikes = [1.0 if random.random() < abs(v) else 0.0 for v in vec_256]
         closest_memory, sim_score = self.hippocampus.retrieve(input_spikes)
-        
+
         if closest_memory is None:
             closest_memory = "Bellek boş."
             sim_score = 0.0
-            
+
         if closest_memory == sensory["raw"]:
             sim_score = 1.0
             closest_memory = "Kendimi dinliyorum."
 
         cortical_spikes = 0
-        
-        # 2. Kortikal İşleme ve Sürekli Zaman (Spiking)
+
+        # 2. Kortikal işleme ve sürekli zaman (Spiking)
         for step in range(self.num_steps):
             noise = (step % 2) * 0.02
             current_in = [v * (1.0 + sensory["salience"] + rhythm) + noise for v in vec_256]
             spikes_2d = self.cortical_layer.step(current_in)
             cortical_spikes += sum(spikes_2d)
 
-        # 3. Anıyı Hipokampüs'e Yazma (One-shot)
+        # 3. Anıyı hipokampüs'e yazma (one-shot)
         self.hippocampus.store(query, input_spikes)
-        
-        # 4. Modül 02: Global Neuronal Workspace (Bilinç Yayını) - Biyolojik Non-lineer Ateşleme (Ignition)
+
+        # 4. Global Neuronal Workspace
         activity_ratio = cortical_spikes / (self.cortical_layer.num_neurons * self.num_steps)
         self.neuromodulators.update(sensory, sim_score, activity_ratio, self.sleep_module.sleep_pressure)
         gain = self.neuromodulators.signal_gain()
-        
-        # Biyolojik RAS (Reticular Activating System) Uyarımı: Sözel/İletişimsel sinyaller bilinci daha hızlı açar
         attention_multiplier = 2.0 if sensory["is_verbal"] else 1.0
-        
         bottom_up_salience = min(1.0, (activity_ratio / self.cortical_layer.target_activity) * attention_multiplier * (0.8 + sensory["salience"]))
-        
-        # Biyolojik beyindeki gibi aşağıdan-yukarı (duyusal/kortikal) ve yukarıdan-aşağı (bellek/hipokampal) 
-        # sinyallerin non-lineer (sigmoid) entegrasyonu (Ignition süreci).
         integrated_signal = ((bottom_up_salience * 0.55) + (sim_score * 0.45)) * gain
-        
-        # Sigmoid tabanlı non-lineer ateşleme fonksiyonu (Non-linear Ignition)
-        # Biyolojik GNW'de eşik aşımı ani ve non-lineerdir ("all-or-none" principle).
+
         def sigmoid_ignition(x, k=10, x0=0.45):
             return 1.0 / (1.0 + math.exp(-k * (x - x0)))
-            
+
         signal_strength = sigmoid_ignition(integrated_signal)
-        
-        # GNW eşiği sabit kalabilir, çünkü sigmoid fonksiyonu sinyali zaten 0 ile 1 arasına sıkıştırıp eşik etrafında zıplatır.
         awareness_level = self.gnw.broadcast(signal_strength, closest_memory)
         gnw_thought = self.gnw.active_thought or closest_memory or sensory["raw"]
-        
+
         if self.sleep_module.stage in {"nrem", "rem"}:
             h_durum = f"Rüya Bilinci (GNW Aktif, {awareness_level:.2f})"
         else:
@@ -1035,43 +1439,72 @@ class MergenNeuromorphicEngine:
             reward_signal=self.reward_system.last_reward,
             motor_plan={"action": self.motor_planner.last_action},
             sleep_stage=self.sleep_module.stage,
+            context_bundle=context_bundle,
         )
-        if intent not in {"greeting", "status", "identity", "thanks", "ack", "question", "statement", "smalltalk_invite", "time_query"}:
+        if intent not in {"greeting", "status", "identity", "thanks", "ack", "question", "followup", "statement", "smalltalk_invite", "time_query"}:
             response_preview = BiolinguisticSynthesizer.generate(sensory["raw"], closest_memory, sim_score, h_durum, gnw_thought, self.working_memory, self.hebbian_weights)
         reward_signal = self.reward_system.infer_reward(sensory["raw"], response_preview, sim_score)
         self.neuromodulators.levels["dopamine"] = max(0.05, min(1.0, self.neuromodulators.levels["dopamine"] + (0.15 * reward_signal)))
         motor_plan = self.motor_planner.plan(sensory, h_durum, reward_signal, self.sleep_module.stage, sim_score)
-        
-        # Hebbian Öğrenme (Kelimeler arası sinaptik ağırlık güncellemeleri)
+        action_feedback = self.action_loop.apply(sensory, motor_plan, response_preview, reward_signal, memory_digest_before)
+
+        # Hebbian öğrenme (kelimeler arası sinaptik güncellemeler)
         stopwords = {"bir", "ve", "ile", "için", "çok", "bu", "şu", "o", "mi", "mu", "mı", "mü", "ne", "nasıl", "neden", "niye", "hangi", "kadar", "gibi", "ben", "sen", "biz", "siz", "onlar", "hakkında", "mısın", "misin", "musun", "müsün", "da", "de", "ki", "konuşalım", "yapalım", "edelim", "olsun", "bence", "sence", "daha", "en", "var", "yok", "evet", "hayır", "diye", "şey", "şeyler", "olan", "olarak", "üzere", "bunu", "buna", "şunu", "şuna", "onu", "ona", "göre", "bana", "sana"}
         raw_words = [w for w in sensory["tokens"] if w not in stopwords and len(w) > 2]
-        # Fiil filtreleme (basit heuristic)
         words = [w for w in raw_words if not (w.endswith("mak") or w.endswith("mek") or w.endswith("iyor") or w.endswith("dım") or w.endswith("dim") or w.endswith("tım") or w.endswith("tim") or w.endswith("acak") or w.endswith("ecek") or w.endswith("mış") or w.endswith("miş"))]
-        if not words: words = raw_words # Eğer her şey filtrelendiyse eskiye dön
+        if not words:
+            words = raw_words
+        association_pairs = []
         for i in range(len(words)):
-            for j in range(i+1, len(words)):
+            for j in range(i + 1, len(words)):
                 w1, w2 = words[i], words[j]
-                if w1 not in self.hebbian_weights: self.hebbian_weights[w1] = {}
-                if w2 not in self.hebbian_weights: self.hebbian_weights[w2] = {}
+                if w1 not in self.hebbian_weights:
+                    self.hebbian_weights[w1] = {}
+                if w2 not in self.hebbian_weights:
+                    self.hebbian_weights[w2] = {}
                 self.hebbian_weights[w1][w2] = self.hebbian_weights[w1].get(w2, 0) + 1
                 self.hebbian_weights[w2][w1] = self.hebbian_weights[w2].get(w1, 0) + 1
-                
-        # 5. Doğal Dil Sentezi
+                association_pairs.append(f"{w1}<->{w2}")
+
         response = response_preview
-        self.dialogue_memory.add_turn(sensory["raw"], intent, topic, response)
+        self.dialogue_memory.add_turn(
+            sensory["raw"],
+            intent,
+            topic,
+            response,
+            salience=sensory["salience"],
+            reward=reward_signal,
+            action=motor_plan["action"],
+            outcome=action_feedback["outcome"],
+            memory_hint=memory_digest_before.get("last_topic"),
+        )
+        self.plasticity_journal.record(
+            self.turn_counter,
+            topic,
+            intent,
+            reward_signal,
+            motor_plan["action"],
+            sim_score,
+            action_feedback["outcome"],
+            association_pairs,
+        )
 
         latency = (datetime.datetime.now() - start_time).total_seconds()
         self.save_state()
-        
+
         return {
             "response": response,
             "duygu": h_durum,
             "esik": self.cortical_layer.threshold[0],
-            "anlam_spikes": int(cortical_spikes * 0.4), 
+            "anlam_spikes": int(cortical_spikes * 0.4),
             "celiski_spikes": int(cortical_spikes * 0.1),
             "cortical_spikes": int(cortical_spikes),
             "latency": latency,
             "motor_plan": motor_plan,
+            "action_feedback": action_feedback,
             "reward": reward_signal,
-            "time": self.temporal_clock.t
+            "time": self.temporal_clock.t,
+            "memory_digest": self.dialogue_memory.memory_digest(),
+            "session_summary": self.dialogue_memory.build_session_summary(),
+            "journal_summary": self.plasticity_journal.summary(),
         }
